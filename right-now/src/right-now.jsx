@@ -371,6 +371,7 @@ export default function RightNow() {
   const [draft, setDraft] = useState("");
   const [pending, setPending] = useState(null); // event awaiting confirmation
   const [reveal, setReveal] = useState(null); // just-finished session
+  const [heard, setHeard] = useState(null); // voice transcript awaiting confirmation
   const [listening, setListening] = useState(false);
   const [thinking, setThinking] = useState(false);
   const [micNote, setMicNote] = useState("");
@@ -460,6 +461,11 @@ export default function RightNow() {
     setTasks((p) => p.filter((t) => t.id !== id));
   }, []);
 
+  /* Drop every session that goes by one name — the "This week" and legend X. */
+  const removeActivity = useCallback((pastLabel) => {
+    setSessions((p) => p.filter((s) => s.past !== pastLabel));
+  }, []);
+
   const submit = useCallback(
     (text) => {
       const r = interpret(text);
@@ -471,6 +477,17 @@ export default function RightNow() {
     },
     [begin, finish, addTask]
   );
+
+  /* Voice is never acted on straight away — you see what it heard and say yes. */
+  const confirmHeard = useCallback(() => {
+    if (heard != null) submit(heard);
+    setHeard(null);
+  }, [heard, submit]);
+
+  const cancelHeard = useCallback(() => {
+    setHeard(null);
+    setDraft("");
+  }, []);
 
   /* ── voice ── */
 
@@ -487,7 +504,7 @@ export default function RightNow() {
         const text = await tauriInvoke("transcribe", { audio });
         setThinking(false);
         const clean = (text || "").trim();
-        if (clean) { setDraft(clean); submit(clean); }
+        if (clean) { setDraft(clean); setHeard(clean); }
         else setMicNote("Nothing came through. Try again a bit closer.");
       } catch (err) {
         setThinking(false);
@@ -503,6 +520,7 @@ export default function RightNow() {
         await tauriInvoke("download_model");
       }
       setMicNote("");
+      setHeard(null);
       recorderRef.current = await startRecording();
       setListening(true);
     } catch (err) {
@@ -512,7 +530,7 @@ export default function RightNow() {
           : String(err)
       );
     }
-  }, [submit, setDraft]);
+  }, [setDraft]);
 
   /* Browser: the built-in speech API, which the packaged app doesn't get. */
   const browserVoice = useCallback(() => {
@@ -529,7 +547,7 @@ export default function RightNow() {
     rec.onresult = (e) => {
       const txt = Array.from(e.results).map((r) => r[0].transcript).join("");
       setDraft(txt);
-      if (e.results[e.results.length - 1].isFinal) submit(txt);
+      if (e.results[e.results.length - 1].isFinal) setHeard(txt.trim());
     };
     rec.onerror = (e) => {
       setListening(false);
@@ -544,7 +562,7 @@ export default function RightNow() {
     setMicNote("");
     setListening(true);
     try { rec.start(); } catch { setListening(false); }
-  }, [listening, submit]);
+  }, [listening]);
 
   const toggleVoice = useCallback(() => {
     if (thinking) return;
@@ -568,18 +586,24 @@ export default function RightNow() {
     return () => { if (un) un(); };
   }, []);
 
-  /* ── shortcut ── */
+  /* ── shortcut: Shift + C records your voice, or stops a running count ── */
   useEffect(() => {
     const onKey = (e) => {
-      const combo = (e.metaKey || e.ctrlKey) && e.shiftKey && e.code === "Space";
+      const combo =
+        e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey && e.code === "KeyC";
       if (!combo) return;
+      // don't hijack a capital C while someone's typing
+      const el = e.target;
+      if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable))
+        return;
       e.preventDefault();
+      setView("now");
       if (activeRef.current) finish();
-      else { setView("now"); setTimeout(() => inputRef.current?.focus(), 0); }
+      else toggleVoice();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [finish]);
+  }, [finish, toggleVoice]);
 
   /* ── OS-level hotkey, when packaged with Tauri ── */
   useEffect(() => {
@@ -627,6 +651,9 @@ export default function RightNow() {
         button { font: inherit; cursor: pointer; }
         input { font: inherit; }
         .rn-focus:focus-visible { outline: 2px solid ${C.ink}; outline-offset: 3px; }
+        .rn-x { opacity: 0; transition: opacity .12s ease; }
+        .rn-row:hover .rn-x, .rn-x:focus-visible { opacity: 1; }
+        @media (hover: none) { .rn-x { opacity: .55; } }
         @keyframes rn-breathe {
           0%,100% { transform: scale(1); opacity: .85; }
           50% { transform: scale(1.55); opacity: .3; }
@@ -678,6 +705,9 @@ export default function RightNow() {
             active={active}
             reveal={reveal}
             pending={pending}
+            heard={heard}
+            onConfirmHeard={confirmHeard}
+            onCancelHeard={cancelHeard}
             draft={draft}
             setDraft={setDraft}
             submit={submit}
@@ -691,6 +721,7 @@ export default function RightNow() {
             ranked={ranked}
             weekTotal={weekTotal}
             revealWeekTotal={revealWeekTotal}
+            removeActivity={removeActivity}
             tasks={tasks}
             addTask={addTask}
             toggleTask={toggleTask}
@@ -726,9 +757,10 @@ export default function RightNow() {
 
 /* ══════════════════════════ now view ══════════════════════════ */
 function NowView({
-  active, reveal, pending, draft, setDraft, submit, finish, inputRef,
+  active, reveal, pending, heard, onConfirmHeard, onCancelHeard,
+  draft, setDraft, submit, finish, inputRef,
   listening, thinking, toggleVoice, micNote, colorFor, ranked, weekTotal,
-  revealWeekTotal, dismissReveal, onConfirmEvent, onCancelEvent,
+  revealWeekTotal, removeActivity, dismissReveal, onConfirmEvent, onCancelEvent,
   tasks, addTask, toggleTask, removeTask, startTask,
 }) {
   const [shown, setShown] = useState(0);
@@ -751,6 +783,23 @@ function NowView({
     raf = requestAnimationFrame(step);
     return () => cancelAnimationFrame(raf);
   }, [reveal]);
+
+  if (heard != null) {
+    return (
+      <section className="rn-rise" style={{ paddingTop: 26 }}>
+        <p style={{ color: C.muted, fontSize: 13, margin: "0 0 12px" }}>
+          Heard you say
+        </p>
+        <h2 style={{ font: `400 clamp(28px,5vw,40px)/1.25 ${SERIF}`, margin: "0 0 24px" }}>
+          &ldquo;{heard}&rdquo;
+        </h2>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+          <Primary onClick={onConfirmHeard}>Confirm</Primary>
+          <Ghost onClick={onCancelHeard}>Cancel</Ghost>
+        </div>
+      </section>
+    );
+  }
 
   if (pending) {
     return (
@@ -901,7 +950,7 @@ function NowView({
           'Say what you\'re doing, or tell it about something coming up — "I have a dentist appointment on September 22nd at 3pm."'}
       </p>
       <p style={{ color: C.muted, fontSize: 13, marginTop: 4 }}>
-        ⌘/Ctrl + Shift + Space starts and stops it.
+        Shift + C records your voice — or stops a running count.
       </p>
 
       <TodayList
@@ -922,7 +971,7 @@ function NowView({
             <span>{fmtDuration(weekTotal)} accounted for</span>
           </div>
           {ranked.slice(0, 6).map(([label, ms]) => (
-            <div key={label} style={{
+            <div key={label} className="rn-row" style={{
               display: "flex", alignItems: "center", gap: 12, padding: "7px 0",
             }}>
               <span style={{
@@ -933,6 +982,18 @@ function NowView({
               <span style={{
                 color: C.muted, fontVariantNumeric: "tabular-nums",
               }}>{fmtDuration(ms)}</span>
+              <button
+                className="rn-x rn-focus"
+                onClick={() => removeActivity(label)}
+                aria-label={`Delete every "${label}" session`}
+                title={`Delete every "${label}"`}
+                style={{
+                  border: "none", background: "none", color: C.muted,
+                  fontSize: 15, lineHeight: 1, padding: "2px 4px", flexShrink: 0,
+                }}
+              >
+                ×
+              </button>
             </div>
           ))}
         </div>
@@ -1069,17 +1130,15 @@ function WeekView({
                     const h = Math.max(15, ((g.end - g.start) / 3600000) * HOUR_PX);
                     const tint = colorFor(g.s.label);
                     return (
-                      <button
+                      <div
                         key={g.s.id + g.start}
-                        className="rn-focus"
-                        onClick={() => setEditing(g.s)}
+                        className="rn-row"
                         title={`${g.s.past} · ${fmtDuration(g.s.end - g.s.start)}`}
                         style={{
                           position: "absolute", left: 2, right: 2, top: top(g.start),
                           height: h - 2, background: tint, color: "#fff",
-                          border: "none", borderRadius: 2, textAlign: "left",
-                          padding: "3px 5px", overflow: "hidden", fontSize: 11,
-                          lineHeight: 1.25, display: "block",
+                          borderRadius: 2, overflow: "hidden", fontSize: 11,
+                          lineHeight: 1.25, padding: "3px 5px",
                         }}
                       >
                         <span style={{ fontWeight: 600 }}>{g.s.past}</span>
@@ -1088,7 +1147,23 @@ function WeekView({
                             {fmtClock(g.s.start)}
                           </span>
                         )}
-                      </button>
+                        <button
+                          className="rn-x rn-focus"
+                          onClick={() =>
+                            setSessions((p) => p.filter((s) => s.id !== g.s.id))
+                          }
+                          aria-label={`Delete ${g.s.past} at ${fmtClock(g.s.start)}`}
+                          title="Delete this one"
+                          style={{
+                            position: "absolute", top: 0, right: 0,
+                            width: 15, height: 15, padding: 0, lineHeight: 1,
+                            border: "none", borderRadius: "0 2px 0 3px",
+                            background: "rgba(0,0,0,.32)", color: "#fff", fontSize: 12,
+                          }}
+                        >
+                          ×
+                        </button>
+                      </div>
                     );
                   })}
                   {evs.filter((e) => dayKey(e.when) === k).map((e) => (
@@ -1123,7 +1198,7 @@ function WeekView({
             const open = editing === label;
             return (
               <div key={label} style={{ padding: "6px 0" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                <div className="rn-row" style={{ display: "flex", alignItems: "center", gap: 12 }}>
                   <button
                     className="rn-focus"
                     onClick={() => setEditing(open ? null : label)}
@@ -1138,6 +1213,20 @@ function WeekView({
                   <span style={{ color: C.muted, fontVariantNumeric: "tabular-nums" }}>
                     {fmtDuration(ms)}
                   </span>
+                  <button
+                    className="rn-x rn-focus"
+                    onClick={() =>
+                      setSessions((p) => p.filter((s) => s.past !== label))
+                    }
+                    aria-label={`Delete every "${label}" session`}
+                    title={`Delete every "${label}"`}
+                    style={{
+                      border: "none", background: "none", color: C.muted,
+                      fontSize: 15, lineHeight: 1, padding: "2px 4px", flexShrink: 0,
+                    }}
+                  >
+                    ×
+                  </button>
                 </div>
                 {open && (
                   <div style={{ display: "flex", gap: 7, padding: "10px 0 4px 27px" }}>
