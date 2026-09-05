@@ -364,6 +364,7 @@ export default function RightNow() {
   const [tasks, setTasks] = useState([]);
   const [events, setEvents] = useState([]);
   const [colors, setColors] = useState({});
+  const [notes, setNotes] = useState({}); // dayKey(date) -> "what I learned today"
   const [active, setActive] = useState(null); // {label, start}
   const [loaded, setLoaded] = useState(false);
 
@@ -393,6 +394,7 @@ export default function RightNow() {
         setTasks(d.tasks || []);
         setEvents(d.events || []);
         setColors(d.colors || {});
+        setNotes(d.notes || {});
         setActive(d.active || null);
       }
       if (alive) setLoaded(true);
@@ -403,8 +405,8 @@ export default function RightNow() {
   /* ── save ── */
   useEffect(() => {
     if (!loaded) return;
-    saveState({ sessions, tasks, events, colors, active });
-  }, [sessions, tasks, events, colors, active, loaded]);
+    saveState({ sessions, tasks, events, colors, notes, active });
+  }, [sessions, tasks, events, colors, notes, active, loaded]);
 
   /* ── color assignment ── */
   const colorFor = useCallback(
@@ -748,6 +750,8 @@ export default function RightNow() {
             setColors={setColors}
             setSessions={setSessions}
             setEvents={setEvents}
+            notes={notes}
+            setNotes={setNotes}
           />
         )}
       </div>
@@ -1006,8 +1010,26 @@ function NowView({
 function WeekView({
   weekStart, weekOffset, setWeekOffset, sessions, events, colorFor,
   ranked, weekTotal, colors, setColors, setSessions, setEvents,
+  notes, setNotes,
 }) {
   const [editing, setEditing] = useState(null);
+  const [noteDay, setNoteDay] = useState(null); // dayKey of the open "what I learned" box
+
+  /* switching weeks with a note box open would point it at the wrong date */
+  useEffect(() => { setNoteDay(null); }, [weekOffset]);
+
+  const saveNote = useCallback((key, text) => {
+    setNotes((p) => {
+      const trimmed = text.trim();
+      if (!trimmed) {
+        if (!(key in p)) return p;
+        const next = { ...p };
+        delete next[key];
+        return next;
+      }
+      return { ...p, [key]: text };
+    });
+  }, [setNotes]);
 
   const days = Array.from({ length: 7 }, (_, i) => {
     const d = new Date(weekStart);
@@ -1071,35 +1093,72 @@ function WeekView({
         </div>
       </div>
 
-      {segs.length === 0 && evs.length === 0 ? (
-        <p style={{ color: C.muted, padding: "40px 0" }}>
-          Nothing logged in this week yet. Start something on the Now screen and
-          it will show up here.
-        </p>
-      ) : (
-        <div style={{
-          background: C.surface, border: `1px solid ${C.edge}`,
-          borderRadius: 3, overflow: "hidden",
-        }}>
-          {/* day names */}
-          <div style={{ display: "flex", borderBottom: `1px solid ${C.edge}` }}>
-            <div style={{ width: 46, flexShrink: 0 }} />
-            {days.map((d) => {
-              const isToday = dayKey(d) === todayKey;
-              return (
-                <div key={d.toISOString()} style={{
+      <div style={{
+        background: C.surface, border: `1px solid ${C.edge}`,
+        borderRadius: 3, overflow: "hidden",
+      }}>
+        {/* day names */}
+        <div style={{ display: "flex", borderBottom: `1px solid ${C.edge}` }}>
+          <div style={{ width: 46, flexShrink: 0 }} />
+          {days.map((d) => {
+            const isToday = dayKey(d) === todayKey;
+            const k = dayKey(d);
+            const hasNote = Boolean(notes[k]);
+            return (
+              <button
+                key={d.toISOString()}
+                className="rn-focus"
+                onClick={() => setNoteDay((p) => (p === k ? null : k))}
+                aria-label={`${noteDay === k ? "Close" : "Open"} what-I-learned note for ${d.toLocaleDateString([], {
+                  weekday: "long", month: "long", day: "numeric",
+                })}`}
+                style={{
                   flex: 1, minWidth: 0, padding: "9px 6px", textAlign: "center",
                   fontSize: 12, color: isToday ? C.ink : C.muted,
-                  borderLeft: `1px solid ${C.edge}`,
+                  borderLeft: `1px solid ${C.edge}`, borderTop: "none",
+                  borderRight: "none", borderBottom: "none",
+                  background: noteDay === k ? C.ground : "none",
                   fontWeight: isToday ? 600 : 400,
-                }}>
-                  {d.toLocaleDateString([], { weekday: "short" })} {d.getDate()}
-                </div>
-              );
-            })}
-          </div>
+                }}
+              >
+                {d.toLocaleDateString([], { weekday: "short" })} {d.getDate()}
+                {isToday && (
+                  <span
+                    aria-hidden="true"
+                    style={{
+                      display: "inline-block", width: 5, height: 5, borderRadius: "50%",
+                      marginLeft: 5, verticalAlign: "middle",
+                      background: hasNote ? C.live : "transparent",
+                      border: `1px solid ${hasNote ? C.live : C.muted}`,
+                    }}
+                  />
+                )}
+              </button>
+            );
+          })}
+        </div>
 
-          {/* grid */}
+        {noteDay && (
+          <div style={{
+            padding: "12px 14px", borderBottom: `1px solid ${C.edge}`,
+            background: C.ground,
+          }}>
+            <DayNote
+              key={noteDay}
+              date={days.find((d) => dayKey(d) === noteDay) || new Date(noteDay)}
+              value={notes[noteDay] || ""}
+              onSave={(text) => saveNote(noteDay, text)}
+            />
+          </div>
+        )}
+
+        {segs.length === 0 && evs.length === 0 ? (
+          <p style={{ color: C.muted, padding: "30px 14px" }}>
+            Nothing logged in this week yet. Start something on the Now screen and
+            it will show up here.
+          </p>
+        ) : (
+          /* grid */
           <div style={{ display: "flex", position: "relative" }}>
             <div style={{ width: 46, flexShrink: 0 }}>
               {hours.map((h) => (
@@ -1182,8 +1241,8 @@ function WeekView({
               );
             })}
           </div>
-        </div>
-      )}
+        )}
+      </div>
 
       {/* legend + color editing */}
       {ranked.length > 0 && (
@@ -1279,6 +1338,49 @@ function WeekView({
         </div>
       )}
     </section>
+  );
+}
+
+/* one free-text note per calendar day, autosaved on blur or a short pause */
+function DayNote({ date, value, onSave }) {
+  const [text, setText] = useState(value);
+  const timerRef = useRef(null);
+
+  useEffect(() => () => { if (timerRef.current) clearTimeout(timerRef.current); }, []);
+
+  const change = (next) => {
+    setText(next);
+    if (timerRef.current) clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(() => onSave(next), 700);
+  };
+
+  const flush = () => {
+    if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
+    onSave(text);
+  };
+
+  return (
+    <div>
+      <p style={{ color: C.muted, fontSize: 12, margin: "0 0 8px" }}>
+        {date.toLocaleDateString([], { weekday: "long", month: "long", day: "numeric" })}
+        {" · what I learned"}
+      </p>
+      <textarea
+        className="rn-focus"
+        autoFocus
+        rows={3}
+        value={text}
+        onChange={(e) => change(e.target.value)}
+        onBlur={flush}
+        placeholder="What did you learn today?"
+        style={{
+          width: "100%", resize: "vertical", border: `1px solid ${C.edge}`,
+          background: C.surface, color: C.ink, borderRadius: 2,
+          padding: "8px 10px", fontSize: 14, fontFamily: SANS,
+          outline: "none",
+        }}
+      />
+    </div>
   );
 }
 
@@ -1388,6 +1490,8 @@ function TodayList({ tasks, addTask, toggleTask, removeTask, startTask }) {
     </div>
   );
 }
+
+//s 
 
 function TaskRow({ task, t0, toggleTask, removeTask, startTask }) {
   const [hover, setHover] = useState(false);
